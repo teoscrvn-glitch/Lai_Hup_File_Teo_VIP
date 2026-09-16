@@ -5,7 +5,7 @@ compatibility_date = "2026-09-16"
 [[d1_databases]]
 binding = "DB"
 database_name = "teo-studio-db"
-database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+database_id = "ae5d9554-7cf7-417a-9ae7-5ea6ec193c9d"
 
 [vars]
 # Do not put secrets here. Set GOOGLE_CLIENT_ID, SESSION_SECRET and LINK4M_API with wrangler secret put.
