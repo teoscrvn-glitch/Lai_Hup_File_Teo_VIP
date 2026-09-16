@@ -1,0 +1,12 @@
+name = "teo-studio-api"
+main = "worker.js"
+compatibility_date = "2026-09-16"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "teo-studio-db"
+database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+
+[vars]
+# Do not put secrets here. Set GOOGLE_CLIENT_ID, SESSION_SECRET and LINK4M_API with wrangler secret put.
+ADMIN_EMAIL = "YOUR_ADMIN_EMAIL@gmail.com"
