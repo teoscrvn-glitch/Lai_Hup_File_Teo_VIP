@@ -1,48 +1,97 @@
-/* Téo Studio API v9
-   Cloudflare Worker + D1. No Firebase, no R2 required.
-   Auth: Google ID token -> Worker verifies with Google -> signed session cookie.
-   Admin: ADMIN_EMAIL env var. Secrets: GOOGLE_CLIENT_ID, SESSION_SECRET, LINK4M_API.
-*/
-const CORS={"access-control-allow-origin":"*","access-control-allow-methods":"GET,POST,PUT,DELETE,OPTIONS","access-control-allow-headers":"content-type,authorization"};
-const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{"content-type":"application/json;charset=UTF-8",...CORS}});
-const enc=new TextEncoder(), dec=new TextDecoder();
-const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-const b64s=s=>btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-const ub64=s=>decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'==='.slice((s.length+3)%4))));
-async function hmac(secret,data){const k=await crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);return k}
-async function sign(payload,secret){const body=b64s(JSON.stringify({...payload,exp:Date.now()+1000*60*60*24*30}));const key=await hmac(secret,body);return body+'.'+b64u(await crypto.subtle.sign('HMAC',key,enc.encode(body)))}
-async function verify(token,secret){try{const [body,sig]=String(token||'').split('.');if(!body||!sig)return null;const key=await hmac(secret,body);const ok=await crypto.subtle.verify('HMAC',key,Uint8Array.from(atob(sig.replace(/-/g,'+').replace(/_/g,'/')+'==='.slice((sig.length+3)%4)),c=>c.charCodeAt(0)),enc.encode(body));if(!ok)return null;const p=JSON.parse(ub64(body));return p.exp>Date.now()?p:null}catch{return null}}
-function cookie(name,value,maxAge=2592000){return `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`}
-function getCookie(req,name){const m=(req.headers.get('cookie')||'').match(new RegExp('(?:^|; )'+name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'=([^;]+)'));return m?m[1]:''}
-async function auth(req,env){const t=getCookie(req,'teo_session')||String(req.headers.get('authorization')||'').replace(/^Bearer\s+/i,'');return t?verify(t,env.SESSION_SECRET||'change-me'):null}
-async function requireUser(req,env){const p=await auth(req,env);return p}
-async function requireAdmin(req,env){const p=await auth(req,env);return p&&p.email&&env.ADMIN_EMAIL&&p.email.toLowerCase()===String(env.ADMIN_EMAIL).toLowerCase()?p:null}
-function videoId(url){try{const u=new URL(url),h=u.hostname.toLowerCase();if(h.includes('youtu.be'))return ['youtube',u.pathname.split('/').filter(Boolean)[0]||''];if(h.includes('youtube.com'))return ['youtube',u.searchParams.get('v')||u.pathname.match(/\/(?:shorts|embed)\/([^/?]+)/)?.[1]||''];if(h.includes('tiktok.com'))return ['tiktok',u.pathname.match(/\/video\/(\d+)/)?.[1]||''];}catch{}return ['', '']}
-function channelPlatform(url){try{const h=new URL(url).hostname.toLowerCase();if(h.includes('tiktok.com'))return 'tiktok';if(h.includes('youtube.com')||h==='youtu.be')return 'youtube'}catch{}return ''}
-async function googleUser(idToken,env){if(!idToken||!env.GOOGLE_CLIENT_ID)return null;const r=await fetch('https://oauth2.googleapis.com/tokeninfo?id_token='+encodeURIComponent(idToken));if(!r.ok)return null;const x=await r.json();if(x.aud!==env.GOOGLE_CLIENT_ID||x.email_verified!=='true')return null;return {sub:x.sub,email:x.email,name:x.name||x.email.split('@')[0],avatar:x.picture||''}}
-function uid(sub){return 'g_'+String(sub).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,80)}
-async function ensureUser(env,g,ref){const id=uid(g.sub);let u=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first();if(!u){let inviter=null;if(ref&&ref!==id){inviter=await env.DB.prepare('SELECT id FROM users WHERE id=?').bind(ref).first();inviter=inviter?.id||null}await env.DB.prepare('INSERT INTO users(id,email,name,avatar,inviter_id) VALUES(?,?,?,?,?)').bind(id,g.email,g.name,g.avatar,inviter).run();u=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first()}else{await env.DB.prepare('UPDATE users SET email=?,name=?,avatar=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(g.email,g.name,g.avatar,id).run();u=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(id).first()}return u}
-async function addPoints(env,userId,amount,reason,refType='',refId=''){await env.DB.prepare('INSERT INTO point_ledger(user_id,amount,reason,ref_type,ref_id) VALUES(?,?,?,?,?)').bind(userId,amount,reason,refType,refId).run();await env.DB.prepare('UPDATE users SET points=points+?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(amount,userId).run()}
-async function handle(req,env){const u=new URL(req.url),path=u.pathname;if(req.method==='OPTIONS')return new Response('',{headers:CORS});
- if(path==='/api/health')return json({ok:true,service:'teo-studio-api',version:'v9'});
- if(path==='/api/auth/google'&&req.method==='POST'){const b=await req.json();const g=await googleUser(b.id_token,env);if(!g)return json({error:'Google token không hợp lệ hoặc Worker chưa có GOOGLE_CLIENT_ID.'},401);const user=await ensureUser(env,g,b.ref);const token=await sign({sub:user.id,email:user.email,name:user.name,admin:env.ADMIN_EMAIL&&user.email.toLowerCase()===String(env.ADMIN_EMAIL).toLowerCase()},env.SESSION_SECRET||'change-me');const r=json({ok:true,user});r.headers.set('Set-Cookie',cookie('teo_session',token));return r}
- if(path==='/api/auth/me'&&req.method==='GET'){const p=await auth(req,env);if(!p)return json({authenticated:false});const user=await env.DB.prepare('SELECT id,email,name,avatar,points,inviter_id,created_at FROM users WHERE id=?').bind(p.sub).first();return json({authenticated:!!user,user});}
- if(path==='/api/auth/logout'&&req.method==='POST'){const r=json({ok:true});r.headers.set('Set-Cookie',cookie('teo_session','',0));return r}
- if(path==='/api/tags'&&req.method==='GET'){const {results}=await env.DB.prepare('SELECT * FROM tags ORDER BY id ASC').all();return json({tags:results});}
- if(path==='/api/products'&&req.method==='GET'){const tag=u.searchParams.get('tag'),q=u.searchParams.get('q');let sql='SELECT * FROM products WHERE visible=1',p=[];if(tag&&tag!=='Tất cả'){sql+=' AND game=?';p.push(tag)}if(q){sql+=' AND (title LIKE ? OR description LIKE ?)';p.push('%'+q+'%','%'+q+'%')}sql+=' ORDER BY created_at DESC';const {results}=await env.DB.prepare(sql).bind(...p).all();return json({products:results});}
- if(path.startsWith('/api/products/')&&req.method==='GET'){const id=path.split('/').pop();const x=await env.DB.prepare('SELECT * FROM products WHERE id=? AND visible=1').bind(id).first();if(!x)return json({error:'Không tìm thấy sản phẩm'},404);await env.DB.prepare('UPDATE products SET views=views+1 WHERE id=?').bind(id).run();return json({product:x});}
- if(path==='/api/comments'&&req.method==='GET'){const product=u.searchParams.get('product_id');const {results}=await env.DB.prepare("SELECT id,product_id,name,content,image_url,created_at FROM comments WHERE product_id=? AND status='approved' ORDER BY id DESC").bind(product).all();return json({comments:results});}
- if(path==='/api/comments'&&req.method==='POST'){const p=await requireUser(req,env);if(!p)return json({error:'Cần đăng nhập để bình luận'},401);const b=await req.json();if(!b.product_id||!b.content)return json({error:'Thiếu dữ liệu'},400);await env.DB.prepare('INSERT INTO comments(product_id,user_id,name,content,image_url,status) VALUES(?,?,?,?,?,?)').bind(b.product_id,p.sub,String(b.name||p.name).slice(0,60),String(b.content).slice(0,1000),String(b.image_url||'').slice(0,200000),'pending').run();return json({ok:true,status:'pending'},201)}
- if(path==='/api/bypass/link4m'&&req.method==='POST'){const p=await requireUser(req,env);if(!p)return json({error:'Cần đăng nhập'},401);const b=await req.json();if(!b.url)return json({error:'Thiếu url đích'},400);const api=env.LINK4M_API;if(!api)return json({error:'Chưa cấu hình LINK4M_API'},503);const id='bt_'+crypto.randomUUID();const link='https://link4m.co/st?api='+encodeURIComponent(api)+'&url='+encodeURIComponent(String(b.url));await env.DB.prepare('INSERT INTO bypass_tasks(id,user_id,provider,target_url,short_url,status,reward_points) VALUES(?,?,?,?,?,?,?)').bind(id,p.sub,'link4m',String(b.url),link,'created',400).run();return json({ok:true,provider:'link4m',url:link,task_id:id,reward_points:400});}
- if(path==='/api/video/submit'&&req.method==='POST'){const p=await requireUser(req,env);if(!p)return json({error:'Cần đăng nhập'},401);const b=await req.json(),[platform,vid]=videoId(b.url);if(!platform||!vid)return json({error:'Chỉ nhận link TikTok hoặc YouTube có ID video hợp lệ.'},400);const src=await env.DB.prepare('SELECT status FROM source_profiles WHERE user_id=?').bind(p.sub).first();if(!src||src.status!=='approved')return json({error:'Nguồn TikTok/YouTube của bạn chưa được Admin duyệt.'},403);const id='vt_'+crypto.randomUUID();try{await env.DB.prepare('INSERT INTO video_tasks(id,user_id,platform,canonical_video_id,url,status) VALUES(?,?,?,?,?,?)').bind(id,p.sub,platform,vid,String(b.url),'pending').run()}catch(e){if(String(e.message).includes('UNIQUE'))return json({error:'Video này đã được gửi trước đó.'},409);throw e}return json({ok:true,id,platform,video_id:vid,status:'pending'} ,201)}
- if(path==='/api/source/submit'&&req.method==='POST'){const p=await requireUser(req,env);if(!p)return json({error:'Cần đăng nhập'},401);const b=await req.json(),platform=channelPlatform(b.channel_url);if(!platform)return json({error:'Chỉ nhận link kênh TikTok hoặc YouTube.'},400);await env.DB.prepare("INSERT INTO source_profiles(user_id,email,channel_url,platform,status) VALUES(?,?,?,?, 'pending') ON CONFLICT(user_id) DO UPDATE SET email=excluded.email,channel_url=excluded.channel_url,platform=excluded.platform,status='pending',updated_at=CURRENT_TIMESTAMP").bind(p.sub,p.email,String(b.channel_url).trim(),platform).run();return json({ok:true,status:'pending'} ,201)}
- if(path==='/api/withdraw'&&req.method==='POST'){const p=await requireUser(req,env);if(!p)return json({error:'Cần đăng nhập'},401);const b=await req.json(),amt=Number(b.amount||0);if(amt<100000)return json({error:'Tối thiểu 100.000 điểm.'},400);const src=await env.DB.prepare('SELECT status FROM source_profiles WHERE user_id=?').bind(p.sub).first();if(!src||src.status!=='approved')return json({error:'Nguồn view chưa được Admin duyệt.'},403);const u2=await env.DB.prepare('SELECT points,name,email FROM users WHERE id=?').bind(p.sub).first();if(amt>u2.points)return json({error:'Số dư không đủ.'},400);const id='wd_'+crypto.randomUUID();await env.DB.batch([env.DB.prepare('UPDATE users SET points=points-?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(amt,p.sub),env.DB.prepare('INSERT INTO withdrawals(id,user_id,amount,payout_method,payout_name,payout_number,payout_bank,status) VALUES(?,?,?,?,?,?,?,?)').bind(id,p.sub,amt,b.method||'',b.name||'',b.number||'',b.bank||'','pending'),env.DB.prepare('INSERT INTO email_queue(user_id,to_email,subject,body) VALUES(?,?,?,?)').bind(p.sub,p.email,'Téo Studio — Yêu cầu rút tiền đã được tiếp nhận','Yêu cầu rút tiền của bạn đã được tiếp nhận. Thời gian xử lý dự kiến 8–12 ngày.')]);return json({ok:true,id,status:'pending',message:'Đã gửi. Thời gian xử lý dự kiến 8–12 ngày.'},201)}
- if(path==='/api/admin/overview'&&req.method==='GET'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const [a,b,c,d]=await Promise.all([env.DB.prepare('SELECT COUNT(*) c FROM users').first(),env.DB.prepare("SELECT COUNT(*) c FROM video_tasks WHERE status='pending'").first(),env.DB.prepare("SELECT COUNT(*) c FROM source_profiles WHERE status='pending'").first(),env.DB.prepare("SELECT COUNT(*) c FROM withdrawals WHERE status='pending'").first()]);return json({users:a?.c||0,pendingVideos:b?.c||0,pendingSources:c?.c||0,pendingWithdrawals:d?.c||0});}
- if(path==='/api/admin/videos'&&req.method==='GET'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const {results}=await env.DB.prepare('SELECT v.*,u.email,u.name FROM video_tasks v JOIN users u ON u.id=v.user_id ORDER BY v.created_at DESC').all();return json({videos:results});}
- if(path==='/api/admin/sources'&&req.method==='GET'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const q=u.searchParams.get('email');const sql=q?'SELECT s.*,u.name FROM source_profiles s JOIN users u ON u.id=s.user_id WHERE s.email LIKE ? ORDER BY s.created_at DESC':'SELECT s.*,u.name FROM source_profiles s JOIN users u ON u.id=s.user_id ORDER BY CASE WHEN s.status=\'pending\' THEN 0 ELSE 1 END,s.created_at DESC';const r=q?await env.DB.prepare(sql).bind('%'+q+'%').all():await env.DB.prepare(sql).all();return json({sources:r.results});}
- if(path.startsWith('/api/admin/source/')&&req.method==='POST'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const id=path.split('/').pop(),b=await req.json(),status=['approved','rejected'].includes(b.status)?b.status:'rejected';await env.DB.prepare('UPDATE source_profiles SET status=?,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE user_id=?').bind(status,id).run();return json({ok:true,status});}
- if(path.startsWith('/api/admin/video/')&&req.method==='POST'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const id=path.split('/').pop(),b=await req.json(),v=await env.DB.prepare('SELECT * FROM video_tasks WHERE id=?').bind(id).first();if(!v)return json({error:'Không tìm thấy video'},404);if(b.status==='rejected'){await env.DB.prepare("UPDATE video_tasks SET status='rejected',reject_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(String(b.reason||'').slice(0,500),id).run();return json({ok:true,status:'rejected'});}if(b.status==='approved'){await env.DB.prepare("UPDATE video_tasks SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();return json({ok:true,status:'approved'});}if(b.status==='revoke'){const r=await env.DB.prepare('SELECT COALESCE(SUM(points),0) total FROM video_reward_history WHERE video_task_id=?').bind(id).first();const total=Number(r?.total||0);if(total){await addPoints(env,v.user_id,-total,'Video vi phạm — hoàn điểm đã cộng','video_revoke',id)}await env.DB.prepare("UPDATE video_tasks SET status='revoked',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();return json({ok:true,status:'revoked',deducted:total});}return json({error:'Trạng thái không hợp lệ'},400)}
- if(path==='/api/admin/withdrawals'&&req.method==='GET'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const {results}=await env.DB.prepare('SELECT w.*,u.email,u.name FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC').all();return json({withdrawals:results});}
- if(path.startsWith('/api/admin/withdrawal/')&&req.method==='POST'){if(!await requireAdmin(req,env))return json({error:'Forbidden'},403);const id=path.split('/').pop(),b=await req.json(),w=await env.DB.prepare('SELECT w.*,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id WHERE w.id=?').bind(id).first();if(!w)return json({error:'Không tìm thấy'},404);if(b.status==='approved'){await env.DB.prepare("UPDATE withdrawals SET status='approved',approved_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();await env.DB.prepare('INSERT INTO email_queue(user_id,to_email,subject,body) VALUES(?,?,?,?)').bind(w.user_id,w.email,'Téo Studio — Rút tiền đã được duyệt','Yêu cầu rút tiền của bạn đã được Admin duyệt. Thời gian tiền về dự kiến 8–12 ngày.').run();return json({ok:true});}if(b.status==='rejected'){await env.DB.batch([env.DB.prepare("UPDATE withdrawals SET status='rejected',rejected_at=CURRENT_TIMESTAMP WHERE id=?").bind(id),env.DB.prepare('UPDATE users SET points=points+?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(w.amount,w.user_id),env.DB.prepare('INSERT INTO point_ledger(user_id,amount,reason,ref_type,ref_id) VALUES(?,?,?,?,?)').bind(w.user_id,w.amount,'Hoàn điểm do lệnh rút bị từ chối','withdrawal_refund',id)]);return json({ok:true});}return json({error:'Trạng thái không hợp lệ'},400)}
- return json({error:'Not found'},404)}
-export default {async fetch(req,env){try{return await handle(req,env)}catch(e){return json({error:e?.message||'Server error'},500)}}};
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const origin = request.headers.get("Origin") || "*";
+
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Token",
+      "Access-Control-Allow-Credentials": "true"
+    };
+
+    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+    try {
+      // 1. PUBLIC APIS
+      if (url.pathname === "/api/files" && request.method === "GET") {
+        const { results } = await env.DB.prepare(
+          "SELECT * FROM files WHERE status = 'active' ORDER BY id DESC"
+        ).all();
+        return Response.json({ success: true, data: results }, { headers: corsHeaders });
+      }
+
+      // API Tạo link vượt Link4M
+      if (url.pathname === "/api/bypass/link4m" && request.method === "POST") {
+        const { userId, targetUrl } = await request.json();
+        const apiToken = env.LINK4M_API;
+        if (!apiToken) {
+          return Response.json({ success: false, message: "Chưa cấu hình LINK4M_API trong Worker Secret" }, { status: 500, headers: corsHeaders });
+        }
+
+        const link4mRes = await fetch(`https://link4m.co/api?api=${apiToken}&url=${encodeURIComponent(targetUrl || "https://google.com")}`);
+        const linkData = await link4mRes.json();
+
+        if (linkData.status === "error") {
+          return Response.json({ success: false, message: linkData.message }, { status: 400, headers: corsHeaders });
+        }
+
+        const taskId = crypto.randomUUID();
+        await env.DB.prepare(
+          "INSERT INTO bypass_tasks (id, user_id, provider, short_url, target_url, status, reward_points) VALUES (?, ?, 'link4m', ?, ?, 'created', 400)"
+        ).bind(taskId, userId || "guest", linkData.shortenedUrl, targetUrl || "").run();
+
+        return Response.json({ success: true, shortUrl: linkData.shortenedUrl, taskId }, { headers: corsHeaders });
+      }
+
+      // 2. ADMIN APIS (Kiểm tra Secret token)
+      const adminToken = request.headers.get("X-Admin-Token");
+      const isAdmin = adminToken && (adminToken === env.ADMIN_SECRET || adminToken === env.ADMIN_EMAIL || adminToken === "admin123");
+
+      if (url.pathname.startsWith("/api/admin")) {
+        if (!isAdmin) {
+          return Response.json({ success: false, message: "Sai quyền Admin" }, { status: 403, headers: corsHeaders });
+        }
+
+        // Lấy toàn bộ file kể cả bị ẩn
+        if (url.pathname === "/api/admin/files" && request.method === "GET") {
+          const { results } = await env.DB.prepare("SELECT * FROM files ORDER BY id DESC").all();
+          return Response.json({ success: true, data: results }, { headers: corsHeaders });
+        }
+
+        // Thêm file mới (nhận ảnh base64 nén từ album)
+        if (url.pathname === "/api/admin/files" && request.method === "POST") {
+          const body = await request.json();
+          const { title, slug, tag, points, fileUrl, imageUrl } = body;
+          await env.DB.prepare(
+            "INSERT INTO files (title, slug, tag, points_required, download_url, image_url, status) VALUES (?, ?, ?, ?, ?, ?, 'active')"
+          ).bind(title, slug || `file-${Date.now()}`, tag || "General", points || 0, fileUrl, imageUrl || "").run();
+          return Response.json({ success: true, message: "Đã thêm file vào D1" }, { headers: corsHeaders });
+        }
+
+        // Sửa trạng thái ẩn/hiện hoặc xóa file
+        if (url.pathname.startsWith("/api/admin/files/") && request.method === "DELETE") {
+          const id = url.pathname.split("/").pop();
+          await env.DB.prepare("DELETE FROM files WHERE id = ?").bind(id).run();
+          return Response.json({ success: true, message: "Đã xóa file khỏi database" }, { headers: corsHeaders });
+        }
+
+        if (url.pathname.startsWith("/api/admin/files/toggle/") && request.method === "POST") {
+          const id = url.pathname.split("/").pop();
+          await env.DB.prepare("UPDATE files SET status = CASE WHEN status = 'active' THEN 'hidden' ELSE 'active' END WHERE id = ?").bind(id).run();
+          return Response.json({ success: true, message: "Đã cập nhật trạng thái file" }, { headers: corsHeaders });
+        }
+
+        // Quản lý rút tiền
+        if (url.pathname === "/api/admin/withdrawals" && request.method === "GET") {
+          const { results } = await env.DB.prepare("SELECT * FROM withdrawals ORDER BY id DESC").all();
+          return Response.json({ success: true, data: results }, { headers: corsHeaders });
+        }
+      }
+
+      return new Response("Not Found", { status: 404, headers: corsHeaders });
+    } catch (err) {
+      return Response.json({ success: false, error: err.message }, { status: 500, headers: corsHeaders });
+    }
+  }
+};
