@@ -1,17 +1,44 @@
--- Téo Studio / Lại Húp File — D1 schema v9
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,name TEXT,avatar TEXT,points INTEGER NOT NULL DEFAULT 0,inviter_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS tags(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,slug TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS products(id TEXT PRIMARY KEY,title TEXT NOT NULL,game TEXT NOT NULL,description TEXT,thumb TEXT,type TEXT NOT NULL DEFAULT 'FREE',points INTEGER NOT NULL DEFAULT 0,views INTEGER NOT NULL DEFAULT 0,download_link TEXT NOT NULL,warning TEXT,bypass_file INTEGER NOT NULL DEFAULT 0,bypass_points INTEGER NOT NULL DEFAULT 0,visible INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id TEXT NOT NULL,user_id TEXT,name TEXT NOT NULL,content TEXT NOT NULL,image_url TEXT,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS source_profiles(user_id TEXT PRIMARY KEY,email TEXT NOT NULL,channel_url TEXT NOT NULL,platform TEXT NOT NULL CHECK(platform IN ('tiktok','youtube')),status TEXT NOT NULL DEFAULT 'pending',reviewed_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS withdrawals(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,amount INTEGER NOT NULL,payout_method TEXT NOT NULL,payout_name TEXT NOT NULL,payout_number TEXT NOT NULL,payout_bank TEXT,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,approved_at TEXT,rejected_at TEXT);
-CREATE TABLE IF NOT EXISTS video_tasks(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,platform TEXT NOT NULL CHECK(platform IN ('tiktok','youtube')),canonical_video_id TEXT NOT NULL,url TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',current_views INTEGER NOT NULL DEFAULT 0,last_checked_views INTEGER NOT NULL DEFAULT 0,rewarded_points INTEGER NOT NULL DEFAULT 0,rewarded_views INTEGER NOT NULL DEFAULT 0,reject_reason TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,platform,canonical_video_id));
-CREATE TABLE IF NOT EXISTS video_reward_milestones(views INTEGER PRIMARY KEY,points INTEGER NOT NULL DEFAULT 0,note TEXT);
-INSERT OR IGNORE INTO video_reward_milestones VALUES(1000,5000,'1K view'),(2000,10000,'2K view'),(3000,15000,'3K view'),(5000,25000,'5K view'),(7000,35000,'7K view'),(10000,50000,'10K view'),(15000,75000,'15K view'),(20000,100000,'20K view'),(30000,150000,'30K view'),(40000,200000,'40K view'),(50000,250000,'50K view'),(60000,300000,'60K view'),(70000,350000,'70K view'),(80000,400000,'80K view'),(90000,450000,'90K view'),(100000,500000,'100K view');
-CREATE TABLE IF NOT EXISTS video_reward_history(id INTEGER PRIMARY KEY AUTOINCREMENT,video_task_id TEXT NOT NULL,user_id TEXT NOT NULL,milestone_views INTEGER NOT NULL,points INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(video_task_id,milestone_views));
-CREATE TABLE IF NOT EXISTS point_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,amount INTEGER NOT NULL,reason TEXT NOT NULL,ref_type TEXT,ref_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS bypass_tasks(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,provider TEXT NOT NULL,target_url TEXT NOT NULL,short_url TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'created',reward_points INTEGER NOT NULL DEFAULT 400,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,completed_at TEXT);
-CREATE TABLE IF NOT EXISTS email_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,to_email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,sent_at TEXT);
-CREATE INDEX IF NOT EXISTS idx_video_tasks_status ON video_tasks(status);CREATE INDEX IF NOT EXISTS idx_video_tasks_user ON video_tasks(user_id);CREATE INDEX IF NOT EXISTS idx_video_rewards_user ON video_reward_history(user_id);CREATE INDEX IF NOT EXISTS idx_point_ledger_user ON point_ledger(user_id,created_at);CREATE INDEX IF NOT EXISTS idx_source_profiles_status ON source_profiles(status);CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);CREATE INDEX IF NOT EXISTS idx_bypass_user ON bypass_tasks(user_id,created_at);
-INSERT OR IGNORE INTO tags(name,slug) VALUES('Roblox','roblox'),('Free Fire','free-fire'),('Làm game','lam-game'),('HTML','html'),('Python','python'),('Tool','tool');
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  slug TEXT UNIQUE,
+  tag TEXT DEFAULT 'General',
+  points_required INTEGER DEFAULT 0,
+  download_url TEXT NOT NULL,
+  image_url TEXT,
+  download_count INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS bypass_tasks (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  provider TEXT,
+  short_url TEXT,
+  target_url TEXT,
+  status TEXT DEFAULT 'created',
+  reward_points INTEGER DEFAULT 400,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS withdrawals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  payment_method TEXT NOT NULL,
+  account_info TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS video_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  video_url TEXT NOT NULL,
+  milestone INTEGER NOT NULL,
+  reward_points INTEGER NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
